@@ -5,20 +5,27 @@
 
 // See minitrace.h for basic documentation.
 
-#include <stdlib.h>
-#include <stdio.h>
-#include <string.h>
+#include <cstdlib>
+#include <cstdio>
+#include <cstring>
+#include <thread>
+#include <mutex>
+#include <map>
+#include <utility>
 
 #ifdef _WIN32
 #pragma warning (disable:4996)
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
-#define __thread __declspec(thread)
+
+//#define __thread __declspec(thread)
+/*
 #define pthread_mutex_t CRITICAL_SECTION
 #define pthread_mutex_init(a, b) InitializeCriticalSection(a)
 #define pthread_mutex_lock(a) EnterCriticalSection(a)
 #define pthread_mutex_unlock(a) LeaveCriticalSection(a)
 #define pthread_mutex_destroy(a) DeleteCriticalSection(a)
+*/
 #else
 #include <signal.h>
 #include <pthread.h>
@@ -55,8 +62,37 @@ static int is_tracing = 0;
 static int64_t time_offset;
 static int first_line = 1;
 static FILE *f;
+#ifdef PTHREAD
 static __thread int cur_thread_id;	// Thread local storage
+#endif // PTHREAD
+
+
+
+
+#ifdef PTHREAD
 static pthread_mutex_t mutex;
+#else
+static uint32_t tid_id = 0;
+static uint32_t pid_id = 0;
+struct FThread{
+  FThread() {
+	  tid_ = tid_id++;
+	  pid_ = pid_id;
+  }
+  inline bool operator == (FThread& other)
+  {
+	return (tid_== other.tid_ && pid_== other.pid_);
+  }
+  inline bool operator != (FThread& other)
+  {
+	  return (tid_ != other.tid_ && pid_ != other.pid_);
+  }
+  uint32_t tid_ = 0;
+  uint32_t pid_ = 0;
+};
+static std::map<std::thread::id,FThread> threads;
+static std::mutex mutex;
+#endif
 
 #define STRING_POOL_SIZE 100
 static char *str_pool[100];
@@ -156,7 +192,12 @@ void mtr_init(const char *json_file) {
 	fwrite(header, 1, strlen(header), f);
 	time_offset = (uint64_t)(mtr_time_s() * 1000000);
 	first_line = 1;
+#ifdef PTHREAD
 	pthread_mutex_init(&mutex, 0);
+#else
+  FThread toInsert;
+  threads.insert(std::make_pair(std::this_thread::get_id(),toInsert));
+#endif
 }
 
 void mtr_shutdown() {
@@ -168,7 +209,9 @@ void mtr_shutdown() {
 	mtr_flush();
 	fwrite("\n]}\n", 1, 4, f);
 	fclose(f);
+#ifdef PTHREAD
 	pthread_mutex_destroy(&mutex);
+#endif
 	f = 0;
 	free(buffer);
 	buffer = 0;
@@ -221,7 +264,11 @@ void mtr_flush() {
 	// We have to lock while flushing. So we really should avoid flushing as much as possible.
 
 
+#ifdef PTHREAD
 	pthread_mutex_lock(&mutex);
+#else
+	std::lock_guard<std::mutex> lock(mutex);
+#endif
 	int old_tracing = is_tracing;
 	is_tracing = 0;	// Stop logging even if using interlocked increments instead of the mutex. Can cause data loss.
 
@@ -285,7 +332,9 @@ void mtr_flush() {
 	}
 	count = 0;
 	is_tracing = old_tracing;
+#ifdef PTHREAD
 	pthread_mutex_unlock(&mutex);
+#endif
 }
 
 void internal_mtr_raw_event(const char *category, const char *name, char ph, void *id) {
@@ -295,18 +344,37 @@ void internal_mtr_raw_event(const char *category, const char *name, char ph, voi
 	if (!is_tracing || count >= INTERNAL_MINITRACE_BUFFER_SIZE)
 		return;
 	double ts = mtr_time_s();
-	if (!cur_thread_id) {
-		cur_thread_id = get_cur_thread_id();
-	}
+	
 
 #if 0 && _WIN32	// TODO: This needs testing
 	int bufPos = InterlockedIncrement(&count);
 	raw_event_t *ev = &buffer[count - 1];
 #else
+#ifdef PTHREAD
+  if (!cur_thread_id) {
+    cur_thread_id = get_cur_thread_id();
+  }
 	pthread_mutex_lock(&mutex);
+#else
+    mutex.lock();
+#endif
 	raw_event_t *ev = &buffer[count];
 	count++;
+#ifdef PTHREAD
 	pthread_mutex_unlock(&mutex);
+#else
+	if(threads.size() < NUMBER_OF_THREADS)
+	{
+      if(threads.find(std::this_thread::get_id())->second != threads.end()->second)
+      {
+        FThread toInsert;
+        threads[std::this_thread::get_id()] = toInsert;
+      }
+
+	}
+	auto current_thread = threads[std::this_thread::get_id()];
+	mutex.unlock();
+#endif
 #endif
 
 	ev->cat = category;
@@ -321,8 +389,13 @@ void internal_mtr_raw_event(const char *category, const char *name, char ph, voi
 	} else {
 		ev->ts = (int64_t)(ts * 1000000);
 	}
+#ifdef PTHREAD
 	ev->tid = cur_thread_id;
 	ev->pid = 0;
+#else
+	ev->tid = current_thread.tid_;
+	ev->pid = current_thread.pid_;
+#endif
 }
 
 void internal_mtr_raw_event_arg(const char *category, const char *name, char ph, void *id, mtr_arg_type arg_type, const char *arg_name, void *arg_value) {
@@ -331,19 +404,39 @@ void internal_mtr_raw_event_arg(const char *category, const char *name, char ph,
 #endif
 	if (!is_tracing || count >= INTERNAL_MINITRACE_BUFFER_SIZE)
 		return;
-	if (!cur_thread_id) {
-		cur_thread_id = get_cur_thread_id();
-	}
+	
 	double ts = mtr_time_s();
 
 #if 0 && _WIN32	// TODO: This needs testing
 	int bufPos = InterlockedIncrement(&count);
 	raw_event_t *ev = &buffer[count - 1];
 #else
+#ifdef PTHREAD
+  if (!cur_thread_id) {
+    cur_thread_id = get_cur_thread_id();
+  }
 	pthread_mutex_lock(&mutex);
+#else
+    std::lock_guard<std::mutex> lock(mutex);
+#endif
 	raw_event_t *ev = &buffer[count];
 	count++;
+#ifdef PTHREAD
 	pthread_mutex_unlock(&mutex);
+#endif
+    if(threads.size() < NUMBER_OF_THREADS)
+	{
+        if(threads.find(std::this_thread::get_id())->second != threads.end()->second)
+        {
+          FThread toInsert;
+          threads.emplace(std::make_pair(std::this_thread::get_id(), toInsert));
+        }
+
+
+
+	}
+
+	auto current_thread = threads[std::this_thread::get_id()];
 #endif
 
 	ev->cat = category;
@@ -351,10 +444,16 @@ void internal_mtr_raw_event_arg(const char *category, const char *name, char ph,
 	ev->id = id;
 	ev->ts = (int64_t)(ts * 1000000);
 	ev->ph = ph;
-	ev->tid = cur_thread_id;
+#ifdef PTHREAD
+    ev->tid = cur_thread_id;
 	ev->pid = 0;
+#else
+	ev->pid = current_thread.pid_;
+	ev->tid = current_thread.tid_;
+#endif
 	ev->arg_type = arg_type;
 	ev->arg_name = arg_name;
+
 	switch (arg_type) {
 	case MTR_ARG_TYPE_INT: ev->a_int = (int)(uintptr_t)arg_value; break;
 	case MTR_ARG_TYPE_STRING_CONST:	ev->a_str = (const char*)arg_value; break;
@@ -363,4 +462,12 @@ void internal_mtr_raw_event_arg(const char *category, const char *name, char ph,
 		break;
 	}
 }
-
+#ifndef PTHREAD
+void change_meta_process_id(uint32_t id)
+{
+#ifndef MTR_ENABLED
+  return;
+#endif
+	pid_id = id;
+}
+#endif

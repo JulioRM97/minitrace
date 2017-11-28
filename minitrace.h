@@ -18,11 +18,15 @@
 // More:
 // http://www.altdevblogaday.com/2012/08/21/using-chrometracing-to-view-your-inline-profiling-data/
 
-#include <inttypes.h>
+#include <cinttypes>
 
 // If MTR_ENABLED is not defined, Minitrace does nothing and has near zero overhead.
 // Preferably, set this flag in your build system. If you can't just uncomment this line.
-// #define MTR_ENABLED
+ #define MTR_ENABLED
+
+// If you are gonna use multythread undefine this macro
+// to say how many threads are you going to use
+#define NUMBER_OF_THREADS 10
 
 // By default, will collect up to 1000000 events, then you must flush.
 // It's recommended that you simply call mtr_flush on a background thread
@@ -135,6 +139,7 @@ void internal_mtr_raw_event_arg(const char *category, const char *name, char ph,
 #define MTR_META_PROCESS_NAME(n) internal_mtr_raw_event_arg("", "process_name", 'M', 0, MTR_ARG_TYPE_STRING_COPY, "name", (void *)(n))
 #define MTR_META_THREAD_NAME(n) internal_mtr_raw_event_arg("", "thread_name", 'M', 0, MTR_ARG_TYPE_STRING_COPY, "name", (void *)(n))
 #define MTR_META_THREAD_SORT_INDEX(i) internal_mtr_raw_event_arg("", "thread_sort_index", 'M', 0, MTR_ARG_TYPE_INT, "sort_index", (void *)(i))
+#define MTR_META_PROCESS_ID(id) change_meta_process_id(id);
 
 #else
 
