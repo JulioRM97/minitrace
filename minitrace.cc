@@ -70,14 +70,14 @@ static __thread int cur_thread_id;	// Thread local storage
 
 
 #ifdef PTHREAD
-static pthread_mutex_t mutex;
+static  mutex_t mutex;
 #else
-static uint32_t tid_id = 0;
-static uint32_t pid_id = 0;
+static uint32_t g_tid = 0;
+static uint32_t g_pid = 0;
 struct FThread{
   FThread() {
-	  tid_ = tid_id++;
-	  pid_ = pid_id;
+	  tid_ = g_tid++;
+	  pid_ = g_pid;
   }
   inline bool operator == (FThread& other)
   {
@@ -192,11 +192,12 @@ void mtr_init(const char *json_file) {
 	fwrite(header, 1, strlen(header), f);
 	time_offset = (uint64_t)(mtr_time_s() * 1000000);
 	first_line = 1;
+	g_tid = 0;
+	g_pid = 0;
 #ifdef PTHREAD
 	pthread_mutex_init(&mutex, 0);
 #else
-  FThread toInsert;
-  threads.insert(std::make_pair(std::this_thread::get_id(),toInsert));
+  threads[std::this_thread::get_id()];
 #endif
 }
 
@@ -358,22 +359,16 @@ void internal_mtr_raw_event(const char *category, const char *name, char ph, voi
 #else
     mutex.lock();
 #endif
-	raw_event_t *ev = &buffer[count];
-	count++;
+
+	raw_event_t *ev = &buffer[count++];
+	
 #ifdef PTHREAD
 	pthread_mutex_unlock(&mutex);
 #else
-	if(threads.size() < NUMBER_OF_THREADS)
-	{
-      if(threads.find(std::this_thread::get_id())->second != threads.end()->second)
-      {
-        FThread toInsert;
-        threads[std::this_thread::get_id()] = toInsert;
-      }
-
-	}
 	auto current_thread = threads[std::this_thread::get_id()];
 	mutex.unlock();
+	ev->tid = current_thread.tid_;
+	ev->pid = current_thread.pid_;
 #endif
 #endif
 
@@ -392,9 +387,6 @@ void internal_mtr_raw_event(const char *category, const char *name, char ph, voi
 #ifdef PTHREAD
 	ev->tid = cur_thread_id;
 	ev->pid = 0;
-#else
-	ev->tid = current_thread.tid_;
-	ev->pid = current_thread.pid_;
 #endif
 }
 
@@ -417,26 +409,20 @@ void internal_mtr_raw_event_arg(const char *category, const char *name, char ph,
   }
 	pthread_mutex_lock(&mutex);
 #else
-    std::lock_guard<std::mutex> lock(mutex);
+  mutex.lock();
 #endif
 	raw_event_t *ev = &buffer[count];
 	count++;
 #ifdef PTHREAD
 	pthread_mutex_unlock(&mutex);
-#endif
-    if(threads.size() < NUMBER_OF_THREADS)
-	{
-        if(threads.find(std::this_thread::get_id())->second != threads.end()->second)
-        {
-          FThread toInsert;
-          threads.emplace(std::make_pair(std::this_thread::get_id(), toInsert));
-        }
-
-
-
-	}
+#else
 
 	auto current_thread = threads[std::this_thread::get_id()];
+  mutex.unlock();
+  
+  ev->pid = current_thread.pid_;
+  ev->tid = current_thread.tid_;
+#endif
 #endif
 
 	ev->cat = category;
@@ -447,9 +433,6 @@ void internal_mtr_raw_event_arg(const char *category, const char *name, char ph,
 #ifdef PTHREAD
     ev->tid = cur_thread_id;
 	ev->pid = 0;
-#else
-	ev->pid = current_thread.pid_;
-	ev->tid = current_thread.tid_;
 #endif
 	ev->arg_type = arg_type;
 	ev->arg_name = arg_name;
@@ -468,6 +451,6 @@ void change_meta_process_id(uint32_t id)
 #ifndef MTR_ENABLED
   return;
 #endif
-	pid_id = id;
+	g_pid = id;
 }
 #endif

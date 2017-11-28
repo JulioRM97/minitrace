@@ -261,6 +261,23 @@ private:
 	const char *category_;
 	const char *name_;
 };
+class MTRScopedFlow{
+ public:
+  MTRScopedFlow(const char *category, const char *name)
+		  : category_(category), name_(name) {
+	  start_time_ = mtr_time_s();
+	  internal_mtr_raw_event(category, name, 's',(void*)&start_time_);
+  }
+  ~MTRScopedFlow() {
+	  internal_mtr_raw_event(category_, name_, 'X', &start_time_);
+	  internal_mtr_raw_event(category_, name_, 'f',(void*)&start_time_);
+  }
+
+ private:
+  const char *category_;
+  const char *name_;
+  double start_time_;
+};
 #endif
 
 #endif
